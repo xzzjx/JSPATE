@@ -139,26 +139,48 @@ def JS_loss_fun(teacher_preds, student_pred):
     tf.add_to_collection('losses', loss)
     return tf.add_n(tf.get_collection('losses'), name='total_loss')
 
+
+def laplace_noise():
+
+    k = 1 / FLAGS.nb_teachers
+
+    noise_dist = tf.distributions.Laplace(loc=0.0, scale=float(FLAGS.lap_scale))
+    noise = k * noise_dist.sample()
+
+    return noise
+
+def gaussian_noise():
+
+    delta = FLAGS.delta 
+    eps = FLAGS.epsilon 
+    assert delta > 0, 'delta needs to be greater than 0'
+    assert eps > 0, 'epsilon needs to be greater than 0'
+    sigma = tf.sqrt(2.0 * tf.log(1.25 / delta)) / eps
+    noise = tf.random_normal(mean=0.0, stddev=sigma)
+    
+    k = 1 / FLAGS.nb_teachers
+    return k * noise
 def JS_loss_fun_noise(teacher_preds, student_pred):
     '''
     添加高斯噪音的teacher和student的JS散度
     '''
-    loss = JS_loss_fun_util(teacher_preds, student_pred)
-    delta = FLAGS.delta
-    eps = FLAGS.epsilon
-    assert delta > 0, 'delta needs to be greater than 0'
-    assert eps > 0, 'epsilon needs to be greater than 0'
+    clean_loss = JS_loss_fun_util(teacher_preds, student_pred)
 
-
+    
     # sigma = tf.sqrt(2.0 * tf.log(1.25 / delta)) / eps
     # # TODO
     # # privacy_accum_op = gnjs.accumulate_privacy_spending(eps, delta, sigma)
     # loss = loss + tf.random_normal(tf.shape(loss), stddev=sigma)
-    k = 1 / FLAGS.nb_teachers
-    loss = loss + k*tf.constant(np.random.laplace(loc=0.0, scale=float(FLAGS.lap_scale)))
+    # noise = tf.Variable(initial_value=0.0, name='noise')
+    # noise = np.random.laplace(loc=0.0, scale=float(FLAGS.lap_scale))
+
+    # loss = loss + k*tf.constant(np.random.laplace(loc=0.0, scale=float(FLAGS.lap_scale)))
+
+    noise = laplace_noise()
+    loss = clean_loss + noise
     
     tf.add_to_collection('losses', loss) # TODO noise too large, loss will be negative
-    return tf.add_n(tf.get_collection('losses'), name='total_loss')
+    return tf.add_n(tf.get_collection('losses'), name='total_loss'), noise, clean_loss
 
 def loss_fun(logits, labels):
     '''
@@ -214,7 +236,7 @@ def train(images, teacher_preds, labels, ckpt_path, dropout=False):
         # teacher_preds = tf.constant(teacher_preds)
         ground_truth_loss = loss_fun(logits, train_labels_node)
         kl_loss = ks_loss_fun(teacher_preds_node, logits)
-        loss = JS_loss_fun_noise(teacher_preds_node, logits)
+        loss, noise, clean_loss = JS_loss_fun_noise(teacher_preds_node, logits)
         tm, sm = JS_part_fun(teacher_preds_node, logits)
         train_op = deep_cnn.train_op_fun(loss, global_step)
 
@@ -249,9 +271,10 @@ def train(images, teacher_preds, labels, ckpt_path, dropout=False):
                                 teacher_preds_node: teacher_preds[start:end],
                                 train_labels_node: labels[start:end]}
             
-            _, loss_value, gt_loss_value, kl_loss_value, summary = sess.run([train_op, loss,  
+            _, loss_value, gt_loss_value, kl_loss_value, summary, noise_value, cl_loss_value = sess.run([train_op,
+                                                                                      loss,  
                                                                                      ground_truth_loss, 
-                                                                                     kl_loss, merged], feed_dict=feed_dict)
+                                                                                     kl_loss, merged, noise, clean_loss], feed_dict=feed_dict)
             duration = time.time() - start_time
             train_writer.add_summary(summary, step)
             assert not np.isnan(loss_value), 'Model diverged with loss = NaN'
@@ -261,9 +284,10 @@ def train(images, teacher_preds, labels, ckpt_path, dropout=False):
                 examples_per_sec = num_examples_per_step / duration
                 sec_per_batch = float(duration)
 
-                format_str = ('%s: step %d, loss = %.2f, gt_loss = %.2f, kl_loss = %.2f, (%.1f examples/sec; %.3f sec/batch)')
+                format_str = ('%s: step %d, loss = %.2f, gt_loss = %.2f, kl_loss = %.2f, noise = %.2f, clean_loss = %.2f, (%.1f examples/sec; %.3f sec/batch)')
 
-                print(format_str % (datetime.now(), step, loss_value, gt_loss_value, kl_loss_value, examples_per_sec, sec_per_batch))
+                print(format_str % (datetime.now(), step, loss_value, gt_loss_value, kl_loss_value, \
+                    noise_value, cl_loss_value, examples_per_sec, sec_per_batch))
 
             if step % 1000 == 0 or (step+1) == FLAGS.max_steps:
                 saver.save(sess, ckpt_path, global_step=step)
