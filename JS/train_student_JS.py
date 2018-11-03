@@ -3,6 +3,7 @@
 from __future__ import division, print_function, unicode_literals, absolute_import
 import numpy as np 
 from six.moves import xrange
+from tensorflow.python import debug as tf_debug
 import tensorflow as tf 
 import math
 import time
@@ -16,6 +17,7 @@ from differential_privacy.multiple_teachers import metrics
 from differential_privacy.multiple_teachers import utils
 # from differential_privacy.multiple_teachers import train_student
 import gnjs
+import noisy_op
 
 FLAGS = tf.flags.FLAGS
 
@@ -43,6 +45,7 @@ tf.flags.DEFINE_float('delta', 0.1, 'loose param for privacy cost of every stude
 tf.flags.DEFINE_integer('heat', 1, 'distillation heat for computing teacher preds')
 tf.flags.DEFINE_float('tm_coef', 0.5, 'coefficient of KL-divergence of teacher and m')
 tf.flags.DEFINE_float('sm_coef', 0.5, 'coefficient of KL-divergence of student and m')
+tf.flags.DEFINE_float('dp_grad_C', 1, 'clip threshold')
 
 
 def prepare_student_data(dataset, nb_teachers):
@@ -74,22 +77,19 @@ def logit2prob(student_pred):
     '''
     change student logit to probability
     '''
-    # batch_size = student_pred.shape[0]
-    # nb_classes = student_pred.shape[1]
-    # change logit to probability
     student_pred = tf.nn.softmax(student_pred)
-    # make student_pred.shape consistant with teacher_preds.shape
-    # student_pred = tf.reshape(student_pred, [batch_size, 1, FLAGS.nb_labels])
     student_pred = tf.expand_dims(student_pred, 1)
     
     return student_pred
 
 def JS_part_fun(teacher_preds, student_pred):
+    '''
+    compute js divergence component tm and sm
+    '''
 
     student_pred = logit2prob(student_pred)
     M = (teacher_preds+student_pred) / 2
     
-    # compute JS divergence
     teacher_preds_dist = tf.distributions.Categorical(probs=teacher_preds)
     student_pred_dist = tf.distributions.Categorical(probs=student_pred)
     M_dist = tf.distributions.Categorical(probs=M)
@@ -98,47 +98,39 @@ def JS_part_fun(teacher_preds, student_pred):
     sm = tf.reduce_mean(tf.distributions.kl_divergence(student_pred_dist, M_dist))
 
     return tm, sm
+
 def JS_loss_fun_util(teacher_preds, student_pred):
     '''
-    使用JS散度计算teacher和student的JS散度
-    Args:
-        teacher_preds: numpy array, type=(batch_size, nb_teachers, nb_clssses)
-        student_pred: tensor logit from inference, type=(batch_size, FLAG.nb_labels)
+    compute js divergence
     '''
-    # batch_size = student_pred.shape[0]
-    # # nb_classes = student_pred.shape[1]
-    # # change logit to probability
-    # student_pred = tf.nn.softmax(student_pred)
-    # # make student_pred.shape consistant with teacher_preds.shape
-    # student_pred = tf.reshape(student_pred, [batch_size, 1, FLAGS.nb_labels])
-
-    # student_pred = logit2prob(student_pred)
-    # M = (teacher_preds+student_pred) / 2
-    
-    # # compute JS divergence
-    # teacher_preds_dist = tf.distributions.Categorical(probs=teacher_preds)
-    # student_pred_dist = tf.distributions.Categorical(probs=student_pred)
-    # M_dist = tf.distributions.Categorical(probs=M)
-
-    # pi1 = 0.99
-    # pi2 = 0.01
-    # tm = tf.distributions.kl_divergence(teacher_preds_dist, M_dist)
-    # sm = tf.distributions.kl_divergence(student_pred_dist, M_dist)
+ 
     tm, sm = JS_part_fun(teacher_preds, student_pred)
     js_mean = FLAGS.tm_coef*tm + FLAGS.sm_coef*sm
-    # js_mean = tf.reduce_mean(pi1*tf.distributions.kl_divergence(teacher_preds_dist, M_dist)  \
-                    # + pi2*tf.distributions.kl_divergence(student_pred_dist, M_dist))
+
     tf.Assert(tf.greater_equal(js_mean, 0),
                     ['js divergence should be non-negative'])
     return js_mean
-    # tf.add_to_collection('losses', js_mean)
-    # return tf.add_n(tf.get_collection('losses'), name='total_loss')
+
 def JS_loss_fun(teacher_preds, student_pred):
+    '''
+    use js divergence without noise as training loss
+    '''
     
     loss = JS_loss_fun_util(teacher_preds, student_pred)
     tf.add_to_collection('losses', loss)
     return tf.add_n(tf.get_collection('losses'), name='total_loss')
 
+def KL_loss_fun(teacher_preds, student_pred):
+    '''
+    use kl divergence as training loss
+    '''
+    student_pred = logit2prob(student_pred)
+    teacher_preds_dist = tf.distributions.Categorical(probs=teacher_preds)
+    student_pred_dist = tf.distributions.Categorical(probs=student_pred)
+    loss = tf.reduce_mean(tf.distributions.kl_divergence(teacher_preds_dist, student_pred_dist))
+    # loss = tf.Print(loss, [loss], message="loss: ")
+    tf.add_to_collection('losses', loss)
+    return tf.add_n(tf.get_collection('losses'), name='total_loss'), loss
 
 def laplace_noise():
 
@@ -149,32 +141,11 @@ def laplace_noise():
 
     return noise
 
-def gaussian_noise():
-
-    delta = FLAGS.delta 
-    eps = FLAGS.epsilon 
-    assert delta > 0, 'delta needs to be greater than 0'
-    assert eps > 0, 'epsilon needs to be greater than 0'
-    sigma = tf.sqrt(2.0 * tf.log(1.25 / delta)) / eps
-    noise = tf.random_normal(mean=0.0, stddev=sigma)
-    
-    k = 1 / FLAGS.nb_teachers
-    return k * noise
 def JS_loss_fun_noise(teacher_preds, student_pred):
     '''
-    添加高斯噪音的teacher和student的JS散度
+    add noise to js divergence training loss
     '''
     clean_loss = JS_loss_fun_util(teacher_preds, student_pred)
-
-    
-    # sigma = tf.sqrt(2.0 * tf.log(1.25 / delta)) / eps
-    # # TODO
-    # # privacy_accum_op = gnjs.accumulate_privacy_spending(eps, delta, sigma)
-    # loss = loss + tf.random_normal(tf.shape(loss), stddev=sigma)
-    # noise = tf.Variable(initial_value=0.0, name='noise')
-    # noise = np.random.laplace(loc=0.0, scale=float(FLAGS.lap_scale))
-
-    # loss = loss + k*tf.constant(np.random.laplace(loc=0.0, scale=float(FLAGS.lap_scale)))
 
     noise = laplace_noise()
     loss = clean_loss + noise
@@ -182,9 +153,19 @@ def JS_loss_fun_noise(teacher_preds, student_pred):
     tf.add_to_collection('losses', loss) # TODO noise too large, loss will be negative
     return tf.add_n(tf.get_collection('losses'), name='total_loss'), noise, clean_loss
 
+def JS_loss_fun_grad(teacher_preds, student_pred, graph):
+    """
+    noisy or not noisy grad, use self-defined op to compute gradient
+    """
+    student_pred = logit2prob(student_pred)    
+    loss = noisy_op.compute_loss(student_pred, teacher_preds, graph, name="nosiy_loss")
+    # loss.set_shape((1,))
+    tf.add_to_collection('losses', loss)
+    return tf.add_n(tf.get_collection('losses'), name='total_loss'), loss
+
 def loss_fun(logits, labels):
     '''
-    compute loss fun without weight decay
+    compute loss fun without weight decay regularizer
     '''
     labels = tf.cast(labels, tf.int64)
     cross_entropy = tf.nn.sparse_softmax_cross_entropy_with_logits(
@@ -193,19 +174,18 @@ def loss_fun(logits, labels):
     cross_entropy_mean = tf.reduce_mean(cross_entropy, name='cross_entropy')
     return cross_entropy_mean
 
-def ks_loss_fun(teacher_preds, student_pred):
+def kl_loss_fun(teacher_preds, student_pred):
+    '''
+    compute kl divergence as an indicator
+    '''
 
     student_pred = logit2prob(student_pred)
+    teacher_preds_dist = tf.distributions.Categorical(probs=teacher_preds)
+    student_pred_dist = tf.distributions.Categorical(probs=student_pred)
+    kl_loss = tf.reduce_mean(tf.distributions.kl_divergence(teacher_preds_dist, student_pred_dist))
+    # kl_loss = tf.Print(kl_loss, [kl_loss], "kl_loss: ")
+    return kl_loss
 
-    teacher_preds_dist = tf.distributions.Categorical(teacher_preds)
-    student_pred_dist = tf.distributions.Categorical(student_pred)
-
-    return tf.reduce_mean(tf.distributions.kl_divergence(teacher_preds_dist, student_pred_dist))
-
-# def train_op_fun(total_loss, global_step):
-#     '''
-
-#     '''
 def train(images, teacher_preds, labels, ckpt_path, dropout=False):
     '''
     This function contains the loop that actually trains the student model
@@ -216,7 +196,7 @@ def train(images, teacher_preds, labels, ckpt_path, dropout=False):
     # assert labels.dtype == np.int32
     teacher_preds_shape = teacher_preds.shape
 
-    with tf.Graph().as_default():
+    with tf.Graph().as_default() as g:
         global_step = tf.Variable(0, trainable=False)
 
         train_data_note = deep_cnn._input_placeholder()
@@ -235,8 +215,10 @@ def train(images, teacher_preds, labels, ckpt_path, dropout=False):
 
         # teacher_preds = tf.constant(teacher_preds)
         ground_truth_loss = loss_fun(logits, train_labels_node)
-        kl_loss = ks_loss_fun(teacher_preds_node, logits)
-        loss, noise, clean_loss = JS_loss_fun_noise(teacher_preds_node, logits)
+        kl_loss = kl_loss_fun(teacher_preds_node, logits)
+        loss, noise, js_loss = JS_loss_fun_noise(teacher_preds_node, logits)
+        # loss, js_loss = JS_loss_fun_grad(teacher_preds_node, logits, g)
+        # loss, js_loss = KL_loss_fun(teacher_preds_node, logits)
         tm, sm = JS_part_fun(teacher_preds_node, logits)
         train_op = deep_cnn.train_op_fun(loss, global_step)
 
@@ -254,7 +236,12 @@ def train(images, teacher_preds, labels, ckpt_path, dropout=False):
         init = tf.global_variables_initializer()
 
         sess = tf.Session(config=tf.ConfigProto(log_device_placement=FLAGS.log_device_placement))
+        # sess = tf_debug.LocalCLIDebugWrapperSession(sess)
+        # sess.add_tensor_filter("has_inf_or_nan", tf_debug.has_inf_or_nan)
+        # print("===========before init===========")
+        # print(tf.global_variables())
         sess.run(init)
+        # print("===========after init===========")
         merged = tf.summary.merge_all()
         train_writer = tf.summary.FileWriter(summary_dir, sess.graph)
         data_length = len(images)
@@ -271,10 +258,10 @@ def train(images, teacher_preds, labels, ckpt_path, dropout=False):
                                 teacher_preds_node: teacher_preds[start:end],
                                 train_labels_node: labels[start:end]}
             
-            _, loss_value, gt_loss_value, kl_loss_value, summary, noise_value, cl_loss_value = sess.run([train_op,
+            _, loss_value, gt_loss_value, kl_loss_value, summary, js_loss_value = sess.run([train_op,
                                                                                       loss,  
                                                                                      ground_truth_loss, 
-                                                                                     kl_loss, merged, noise, clean_loss], feed_dict=feed_dict)
+                                                                                     kl_loss, merged, js_loss], feed_dict=feed_dict)
             duration = time.time() - start_time
             train_writer.add_summary(summary, step)
             assert not np.isnan(loss_value), 'Model diverged with loss = NaN'
@@ -284,10 +271,10 @@ def train(images, teacher_preds, labels, ckpt_path, dropout=False):
                 examples_per_sec = num_examples_per_step / duration
                 sec_per_batch = float(duration)
 
-                format_str = ('%s: step %d, loss = %.2f, gt_loss = %.2f, kl_loss = %.2f, noise = %.2f, clean_loss = %.2f, (%.1f examples/sec; %.3f sec/batch)')
+                format_str = ('%s: step %d, loss = %.2f, gt_loss = %.2f, kl_loss = %.2f, js_loss = %.2f, (%.1f examples/sec; %.3f sec/batch)')
 
                 print(format_str % (datetime.now(), step, loss_value, gt_loss_value, kl_loss_value, \
-                    noise_value, cl_loss_value, examples_per_sec, sec_per_batch))
+                    js_loss_value, examples_per_sec, sec_per_batch))
 
             if step % 1000 == 0 or (step+1) == FLAGS.max_steps:
                 saver.save(sess, ckpt_path, global_step=step)
