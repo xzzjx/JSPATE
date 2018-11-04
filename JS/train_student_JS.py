@@ -46,6 +46,7 @@ tf.flags.DEFINE_integer('heat', 1, 'distillation heat for computing teacher pred
 tf.flags.DEFINE_float('tm_coef', 0.5, 'coefficient of KL-divergence of teacher and m')
 tf.flags.DEFINE_float('sm_coef', 0.5, 'coefficient of KL-divergence of student and m')
 tf.flags.DEFINE_float('dp_grad_C', 1, 'clip threshold')
+tf.flags.DEFINE_bool('lap_epsilon', 0.5, 'privacy cost of laplace')
 
 
 def prepare_student_data(dataset, nb_teachers):
@@ -216,8 +217,8 @@ def train(images, teacher_preds, labels, ckpt_path, dropout=False):
         # teacher_preds = tf.constant(teacher_preds)
         ground_truth_loss = loss_fun(logits, train_labels_node)
         kl_loss = kl_loss_fun(teacher_preds_node, logits)
-        loss, noise, js_loss = JS_loss_fun_noise(teacher_preds_node, logits)
-        # loss, js_loss = JS_loss_fun_grad(teacher_preds_node, logits, g)
+        # loss, noise, js_loss = JS_loss_fun_noise(teacher_preds_node, logits)
+        loss, js_loss = JS_loss_fun_grad(teacher_preds_node, logits, g)
         # loss, js_loss = KL_loss_fun(teacher_preds_node, logits)
         tm, sm = JS_part_fun(teacher_preds_node, logits)
         train_op = deep_cnn.train_op_fun(loss, global_step)

@@ -29,25 +29,25 @@ from differential_privacy.multiple_teachers import metrics
 
 FLAGS = tf.flags.FLAGS
 
-# tf.flags.DEFINE_string('dataset', 'svhn', 'The name of the dataset to use')
-# tf.flags.DEFINE_integer('nb_labels', 10, 'Number of output classes')
+tf.flags.DEFINE_string('dataset', 'svhn', 'The name of the dataset to use')
+tf.flags.DEFINE_integer('nb_labels', 10, 'Number of output classes')
 
-# tf.flags.DEFINE_string('data_dir','/tmp','Temporary storage')
-# tf.flags.DEFINE_string('train_dir','/tmp/train_dir','Where model chkpt are saved')
-# tf.flags.DEFINE_string('teachers_dir','/tmp/train_dir',
-#                        'Directory where teachers checkpoints are stored.')
+tf.flags.DEFINE_string('data_dir','/tmp','Temporary storage')
+tf.flags.DEFINE_string('train_dir','/tmp/train_dir','Where model chkpt are saved')
+tf.flags.DEFINE_string('teachers_dir','/tmp/train_dir',
+                       'Directory where teachers checkpoints are stored.')
 
-# tf.flags.DEFINE_integer('teachers_max_steps', 3000,
-#                         'Number of steps teachers were ran.')
-# tf.flags.DEFINE_integer('max_steps', 3000, 'Number of steps to run student.')
-# tf.flags.DEFINE_integer('nb_teachers', 10, 'Teachers in the ensemble.')
-# tf.flags.DEFINE_integer('stdnt_share', 1000,
-#                         'Student share (last index) of the test data')
-# tf.flags.DEFINE_integer('lap_scale', 10,
-#                         'Scale of the Laplacian noise added for privacy')
-# tf.flags.DEFINE_boolean('save_labels', False,
-#                         'Dump numpy arrays of labels and clean teacher votes')
-# tf.flags.DEFINE_boolean('deeper', False, 'Activate deeper CNN model')
+tf.flags.DEFINE_integer('teachers_max_steps', 3000,
+                        'Number of steps teachers were ran.')
+tf.flags.DEFINE_integer('max_steps', 3000, 'Number of steps to run student.')
+tf.flags.DEFINE_integer('nb_teachers', 10, 'Teachers in the ensemble.')
+tf.flags.DEFINE_integer('stdnt_share', 1000,
+                        'Student share (last index) of the test data')
+tf.flags.DEFINE_integer('lap_scale', 10,
+                        'Scale of the Laplacian noise added for privacy')
+tf.flags.DEFINE_boolean('save_labels', False,
+                        'Dump numpy arrays of labels and clean teacher votes')
+tf.flags.DEFINE_boolean('deeper', False, 'Activate deeper CNN model')
 
 
 def ensemble_preds(dataset, nb_teachers, stdnt_data):

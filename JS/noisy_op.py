@@ -76,7 +76,7 @@ def backprop_func(op, grad):
     d_ = d_ / np.log(2.0)
     d = 0.5*tf.reduce_mean(d_, axis=1, name='reduce_mean')
     d = tf.expand_dims(d, 1)
-    s_grad = d*grad/FLAGS.nb_teachers
+    s_grad = d*grad/FLAGS.batch_size
     t_grad = tf.constant(np.zeros(10, dtype=np.float32))
 
     t_grad = tf.tile(t_grad, [t.get_shape()[0]*t.get_shape()[1]])
@@ -101,6 +101,18 @@ def gaussian_noise(shape):
     
     return noise
 
+def laplace_noise(shape):
+    '''
+    produce laplace noise, shape is tensor shape
+    '''
+
+    lap_epsilon = FLAGS.lap_epsilon
+    delta_f = 2*FLAGS.dp_grad_C
+    lap_scale = delta_f / lap_epsilon
+    lap_dist = tf.distributions.Laplace(loc=0.0, scale= lap_scale)
+    noise = lap_dist.sample(shape)
+    return noise
+
 def backprop_func_noise(op, grad):
     s = op.inputs[0]
     t = op.inputs[1]
@@ -109,15 +121,29 @@ def backprop_func_noise(op, grad):
     tmp = 2.0*s/(denominator+1e-14) + 1e-14
     d_ = tf.log(tmp, name='derivation')
     d_ = d_ / np.log(2.0)
-    d = 0.5*tf.reduce_mean(d_, axis=1, name='reduce_mean')
+
+    # restrict d's element less or equal than dp_grad_C
+    d_l2_norm = tf.sqrt(tf.reduce_sum(tf.multiply(d_, d_), axis=-1)) # [128, 100]
+    d_max_l2norm = tf.reduce_max(d_l2_norm, axis=-1) # [128, 1]
+    # d_max_l2norm = tf.Print(d_max_l2norm, [d_max_l2norm], message='d_max_l2norm: ', first_n=10, summarize=50)
+    threshold = d_max_l2norm / FLAGS.dp_grad_C # [128,]
+    threshold = tf.maximum(1.0, threshold) # [128,]
+    threshold = tf.expand_dims(threshold, 1)
+    threshold = tf.expand_dims(threshold, 2)
+    threshold = tf.tile(threshold, [1, FLAGS.nb_teachers, FLAGS.nb_labels])
+    d_ = d_ / threshold # [128, 100, 10]
+    # d_ = tf.Print(d_, [d_], message='d_: ', first_n=10, summarize=50)
+    d = tf.reduce_sum(d_, axis=1, name='reduce_sum')
+    if FLAGS.lap_epsilon:
+        d = d + laplace_noise(d.get_shape())
+    else:
+        d = d + gaussian_noise(d.get_shape())
+    d = d / FLAGS.nb_teachers
+    d = 0.5*d
     d = tf.expand_dims(d, 1)
 
-    s_grad = d * grad
-    s_grad = s_grad / tf.maximum(1.0, FLAGS.dp_grad_C)
-    s_grad = s_grad + gaussian_noise(s_grad.get_shape())
-    s_grad = s_grad/FLAGS.nb_teachers
-    # stddev = FLAGS.noise_scale*FLAGS.dp_grad_C
-    # s_grad = s_grad+tf.random_normal(shape=s_grad.get_shape, stddev=stddev)
+    s_grad = d*grad/FLAGS.batch_size
+
     t_grad = tf.constant(np.zeros(10, dtype=np.float32))
 
     t_grad = tf.tile(t_grad, [t.get_shape()[0]*t.get_shape()[1]])
@@ -125,6 +151,35 @@ def backprop_func_noise(op, grad):
 
     return s_grad, t_grad
 
+def backprop_func_random_response(op, grad):
+    s = op.inputs[0]
+    t = op.inputs[1]
+
+    # random sampling
+    means = tf.constant(0.0)
+    sample = tf.where(tf.random_normal(t.get_shape()) - means < 0,
+                    tf.ones(t.get_shape()), tf.zeros(t.get_shape()))
+    
+    sample = tf.Print(sample, [sample], "sample: ", first_n=10, summarize=100)
+
+    denominator = tf.add(s, t, name='denominator')
+    tmp = 2.0*s/(denominator+1e-14) + 1e-14
+    
+    tmp = tf.multiply(sample, tmp, name="multipy_sample")
+    d_ = tf.log(tmp+1e-14, name='derivation')
+    d_ = d_ / np.log(2.0)
+    
+    # sample = tf.ones(d_.get_shape())
+    # d_ = tf.multiply(sample, d_, name="multiply_sample")
+    d = 0.5*tf.reduce_mean(d_, axis=1, name='reduce_mean')
+    d = tf.expand_dims(d, 1)
+    s_grad = d * grad / FLAGS.batch_size
+    
+    t_grad = tf.constant(np.zeros(10, dtype=np.float32))
+
+    t_grad = tf.tile(t_grad, [t.get_shape()[0]*t.get_shape()[1]])
+    t_grad = tf.reshape(t_grad, t.get_shape())
+    return s_grad, t_grad
 # def backprop_func(op, grad):
 #     '''
 #    wrong implementation, because use mean gradients over batch
