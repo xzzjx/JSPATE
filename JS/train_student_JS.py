@@ -46,7 +46,7 @@ tf.flags.DEFINE_integer('heat', 1, 'distillation heat for computing teacher pred
 tf.flags.DEFINE_float('tm_coef', 0.5, 'coefficient of KL-divergence of teacher and m')
 tf.flags.DEFINE_float('sm_coef', 0.5, 'coefficient of KL-divergence of student and m')
 tf.flags.DEFINE_float('dp_grad_C', 1, 'clip threshold')
-tf.flags.DEFINE_bool('lap_epsilon', 0.5, 'privacy cost of laplace')
+tf.flags.DEFINE_float('lap_epsilon', 0.5, 'privacy cost of laplace')
 
 
 def prepare_student_data(dataset, nb_teachers):

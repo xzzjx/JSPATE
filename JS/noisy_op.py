@@ -132,12 +132,20 @@ def backprop_func_noise(op, grad):
     threshold = tf.expand_dims(threshold, 2)
     threshold = tf.tile(threshold, [1, FLAGS.nb_teachers, FLAGS.nb_labels])
     d_ = d_ / threshold # [128, 100, 10]
-    # d_ = tf.Print(d_, [d_], message='d_: ', first_n=10, summarize=50)
-    d = tf.reduce_sum(d_, axis=1, name='reduce_sum')
+
+    condition = tf.greater_equal(d_, -FLAGS.dp_grad_C)
+    assert_op = tf.Assert(tf.reduce_any(condition), [condition])
+    with tf.control_dependencies([assert_op]):
+        # d_ = tf.Print(d_, [d_], message='d_: ', first_n=10, summarize=50)
+        d = tf.reduce_sum(d_, axis=1, name='reduce_sum')
     if FLAGS.lap_epsilon:
-        d = d + laplace_noise(d.get_shape())
+        noise = laplace_noise(d.get_shape())
+        # d = d + laplace_noise(d.get_shape())
+        d = d + noise
     else:
-        d = d + gaussian_noise(d.get_shape())
+        noise = gaussian_noise(d.get_shape())
+        d = d + noise
+        # d = d + gaussian_noise(d.get_shape())
     d = d / FLAGS.nb_teachers
     d = 0.5*d
     d = tf.expand_dims(d, 1)
