@@ -13,6 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
+import numpy as np 
 
 def batch_indices(batch_nb, data_length, batch_size):
   """
@@ -33,3 +34,13 @@ def batch_indices(batch_nb, data_length, batch_size):
     end -= shift
 
   return start, end
+
+def random_batch_indices(batch_nb, data_length, batch_size):
+  '''
+  This helper function computes a batch start and end index randomly
+  '''
+  random_indices = np.arange(data_length, dtype=np.int32)
+  np.random.shuffle(random_indices)
+  start = 0
+  end = batch_size
+  return random_indices[start: end]

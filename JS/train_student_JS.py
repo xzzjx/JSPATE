@@ -42,7 +42,7 @@ tf.flags.DEFINE_boolean('save_labels', False,
 tf.flags.DEFINE_boolean('deeper', False, 'Activate deeper CNN model')
 tf.flags.DEFINE_float('epsilon', 0.5, 'privacy cost of every student query')
 tf.flags.DEFINE_float('delta', 0.1, 'loose param for privacy cost of every student query')
-tf.flags.DEFINE_integer('heat', 1, 'distillation heat for computing teacher preds')
+tf.flags.DEFINE_float('heat', 1, 'distillation heat for computing teacher preds')
 tf.flags.DEFINE_float('tm_coef', 0.5, 'coefficient of KL-divergence of teacher and m')
 tf.flags.DEFINE_float('sm_coef', 0.5, 'coefficient of KL-divergence of student and m')
 tf.flags.DEFINE_float('dp_grad_C', 1, 'clip threshold')
@@ -81,6 +81,15 @@ def logit2prob(student_pred):
     student_pred = tf.nn.softmax(student_pred)
     student_pred = tf.expand_dims(student_pred, 1)
     
+    return student_pred
+
+def logit2prob_heat(student_pred):
+    '''
+    change student logit to probability with distillation heat
+    '''
+    student_pred = tf.nn.softmax(student_pred / FLAGS.heat)
+    student_pred = tf.expand_dims(student_pred, 1)
+
     return student_pred
 
 def JS_part_fun(teacher_preds, student_pred):
@@ -158,7 +167,10 @@ def JS_loss_fun_grad(teacher_preds, student_pred, graph):
     """
     noisy or not noisy grad, use self-defined op to compute gradient
     """
-    student_pred = logit2prob(student_pred)    
+    if FLAGS.heat:
+        student_pred = logit2prob_heat(student_pred)
+    else:
+        student_pred = logit2prob(student_pred)    
     loss = noisy_op.compute_loss(student_pred, teacher_preds, graph, name="nosiy_loss")
     # loss.set_shape((1,))
     tf.add_to_collection('losses', loss)
@@ -179,8 +191,10 @@ def kl_loss_fun(teacher_preds, student_pred):
     '''
     compute kl divergence as an indicator
     '''
-
-    student_pred = logit2prob(student_pred)
+    if FLAGS.heat:
+        student_pred = logit2prob_heat(student_pred)
+    else:
+        student_pred = logit2prob(student_pred)
     teacher_preds_dist = tf.distributions.Categorical(probs=teacher_preds)
     student_pred_dist = tf.distributions.Categorical(probs=student_pred)
     kl_loss = tf.reduce_mean(tf.distributions.kl_divergence(teacher_preds_dist, student_pred_dist))
@@ -253,11 +267,16 @@ def train(images, teacher_preds, labels, ckpt_path, dropout=False):
 
             batch_nb = step % nb_batches
 
-            start, end = utils.batch_indices(batch_nb, data_length, FLAGS.batch_size)
+            # start, end = utils.batch_indices(batch_nb, data_length, FLAGS.batch_size)
 
-            feed_dict = {train_data_note: images[start:end],
-                                teacher_preds_node: teacher_preds[start:end],
-                                train_labels_node: labels[start:end]}
+            # feed_dict = {train_data_note: images[start:end],
+            #                     teacher_preds_node: teacher_preds[start:end],
+            #                     train_labels_node: labels[start:end]}
+            
+            batch_indices = utils.random_batch_indices(batch_nb, data_length, FLAGS.batch_size)
+            feed_dict = {train_data_note: images[batch_indices],
+                                teacher_preds_node: teacher_preds[batch_indices],
+                                train_labels_node: labels[batch_indices]}
             
             _, loss_value, gt_loss_value, kl_loss_value, summary, js_loss_value = sess.run([train_op,
                                                                                       loss,  
@@ -346,7 +365,7 @@ def train_student_JS(dataset, nb_teachers):
     else:
         ckpt_path = FLAGS.train_dir + '/' + str(dataset) + '_' + str(nb_teachers) + '_student.ckpt'
 
-    assert train(stdnt_data, teacher_preds,  stdnt_labels, ckpt_path)
+    assert train(stdnt_data, teacher_preds,  stdnt_labels, ckpt_path, dropout=True)
 
     ckpt_path_final = ckpt_path + '-' + str(FLAGS.max_steps - 1)
 
