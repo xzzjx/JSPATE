@@ -37,6 +37,7 @@ tf.flags.DEFINE_integer('nb_teachers', 50, 'Teachers in the ensemble.')
 tf.flags.DEFINE_integer('teacher_id', 0, 'ID of teacher being trained.')
 
 tf.flags.DEFINE_boolean('deeper', False, 'Activate deeper CNN model')
+tf.flags.DEFINE_integer("teacher_data_share", 0, 'use how much data to train teachers')
 
 FLAGS = tf.flags.FLAGS
 
@@ -65,6 +66,9 @@ def train_teacher(dataset, nb_teachers, teacher_id):
     print("Check value of dataset flag")
     return False
 
+  if FLAGS.teacher_data_share:
+    train_data = train_data[:FLAGS.teacher_data_share]
+    train_labels = train_labels[:FLAGS.teacher_data_share]
   # Retrieve subset of data for this teacher
   data, labels = input.partition_dataset(train_data,
                                          train_labels,

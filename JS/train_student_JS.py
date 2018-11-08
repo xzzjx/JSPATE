@@ -18,6 +18,8 @@ from differential_privacy.multiple_teachers import utils
 # from differential_privacy.multiple_teachers import train_student
 import gnjs
 import noisy_op
+import student_model
+import noise_grad_analysis
 
 FLAGS = tf.flags.FLAGS
 
@@ -46,7 +48,7 @@ tf.flags.DEFINE_float('heat', 1, 'distillation heat for computing teacher preds'
 tf.flags.DEFINE_float('tm_coef', 0.5, 'coefficient of KL-divergence of teacher and m')
 tf.flags.DEFINE_float('sm_coef', 0.5, 'coefficient of KL-divergence of student and m')
 tf.flags.DEFINE_float('dp_grad_C', 1, 'clip threshold')
-tf.flags.DEFINE_float('lap_epsilon', 0.5, 'privacy cost of laplace')
+tf.flags.DEFINE_float('lap_epsilon', 0.0, 'privacy cost of laplace')
 
 
 def prepare_student_data(dataset, nb_teachers):
@@ -167,10 +169,11 @@ def JS_loss_fun_grad(teacher_preds, student_pred, graph):
     """
     noisy or not noisy grad, use self-defined op to compute gradient
     """
-    if FLAGS.heat:
-        student_pred = logit2prob_heat(student_pred)
-    else:
-        student_pred = logit2prob(student_pred)    
+    # if FLAGS.heat:
+    #     student_pred = logit2prob_heat(student_pred)
+    # else:
+    #     student_pred = logit2prob(student_pred)    
+    student_pred = logit2prob(student_pred)
     loss = noisy_op.compute_loss(student_pred, teacher_preds, graph, name="nosiy_loss")
     # loss.set_shape((1,))
     tf.add_to_collection('losses', loss)
@@ -191,10 +194,11 @@ def kl_loss_fun(teacher_preds, student_pred):
     '''
     compute kl divergence as an indicator
     '''
-    if FLAGS.heat:
-        student_pred = logit2prob_heat(student_pred)
-    else:
-        student_pred = logit2prob(student_pred)
+    # if FLAGS.heat:
+    #     student_pred = logit2prob_heat(student_pred)
+    # else:
+    #     student_pred = logit2prob(student_pred)
+    student_pred = logit2prob(student_pred)
     teacher_preds_dist = tf.distributions.Categorical(probs=teacher_preds)
     student_pred_dist = tf.distributions.Categorical(probs=student_pred)
     kl_loss = tf.reduce_mean(tf.distributions.kl_divergence(teacher_preds_dist, student_pred_dist))
@@ -214,7 +218,8 @@ def train(images, teacher_preds, labels, ckpt_path, dropout=False):
     with tf.Graph().as_default() as g:
         global_step = tf.Variable(0, trainable=False)
 
-        train_data_note = deep_cnn._input_placeholder()
+        # train_data_node = deep_cnn._input_placeholder()
+        train_data_node = student_model._input_placeholder()
 
         train_labels_shape = (FLAGS.batch_size,)
         train_labels_node = tf.placeholder(tf.int32, shape=train_labels_shape)
@@ -224,9 +229,11 @@ def train(images, teacher_preds, labels, ckpt_path, dropout=False):
         print("Done Initializing Training Placeholders")
 
         if FLAGS.deeper:
-            logits = deep_cnn.inference_deeper(train_data_note, dropout=dropout)
+            # logits = deep_cnn.inference_deeper(train_data_node, dropout=dropout)
+            logits = student_model.inference_deeper(train_data_node, dropout=dropout)
         else:
-            logits = deep_cnn.inference(train_data_note, dropout=dropout)
+            # logits = deep_cnn.inference(train_data_node, dropout=dropout)
+            logits = student_model.inference(train_data_node, dropout=dropout)
 
         # teacher_preds = tf.constant(teacher_preds)
         ground_truth_loss = loss_fun(logits, train_labels_node)
@@ -235,7 +242,8 @@ def train(images, teacher_preds, labels, ckpt_path, dropout=False):
         loss, js_loss = JS_loss_fun_grad(teacher_preds_node, logits, g)
         # loss, js_loss = KL_loss_fun(teacher_preds_node, logits)
         tm, sm = JS_part_fun(teacher_preds_node, logits)
-        train_op = deep_cnn.train_op_fun(loss, global_step)
+        # train_op = deep_cnn.train_op_fun(loss, global_step)
+        train_op = student_model.train_op_fun(loss, global_step)
 
         saver = tf.train.Saver(tf.global_variables())
 
@@ -269,12 +277,12 @@ def train(images, teacher_preds, labels, ckpt_path, dropout=False):
 
             # start, end = utils.batch_indices(batch_nb, data_length, FLAGS.batch_size)
 
-            # feed_dict = {train_data_note: images[start:end],
+            # feed_dict = {train_data_node: images[start:end],
             #                     teacher_preds_node: teacher_preds[start:end],
             #                     train_labels_node: labels[start:end]}
             
             batch_indices = utils.random_batch_indices(batch_nb, data_length, FLAGS.batch_size)
-            feed_dict = {train_data_note: images[batch_indices],
+            feed_dict = {train_data_node: images[batch_indices],
                                 teacher_preds_node: teacher_preds[batch_indices],
                                 train_labels_node: labels[batch_indices]}
             
@@ -352,7 +360,7 @@ def train_student_JS(dataset, nb_teachers):
 
     stdnt_data, stdnt_labels, stdnt_test_data, stdnt_test_labels = stdnt_dataset
 
-    teacher_preds_filepath = FLAGS.train_dir + '/' + str(dataset) + '_' + str(nb_teachers) + '_' + str(FLAGS.heat) + '_teacher_preds.npy'
+    teacher_preds_filepath = FLAGS.train_dir + '/' + str(dataset) + '_' + str(nb_teachers) + '_' + str(FLAGS.heat) + '_' + str(FLAGS.stdnt_share) +'_teacher_preds.npy'
     
     if os.path.exists(teacher_preds_filepath):
         teacher_preds = np.load(teacher_preds_filepath)
@@ -365,22 +373,30 @@ def train_student_JS(dataset, nb_teachers):
     else:
         ckpt_path = FLAGS.train_dir + '/' + str(dataset) + '_' + str(nb_teachers) + '_student.ckpt'
 
-    assert train(stdnt_data, teacher_preds,  stdnt_labels, ckpt_path, dropout=True)
+    assert train(stdnt_data, teacher_preds,  stdnt_labels, ckpt_path)
 
     ckpt_path_final = ckpt_path + '-' + str(FLAGS.max_steps - 1)
 
     teacher_precision = teacher_aggregation_acc(teacher_preds, stdnt_labels)
     print("Precision of teacher aggregation vote: " + str(teacher_precision))
 
-    student_train_pred = deep_cnn.softmax_preds(stdnt_data, ckpt_path_final)
+    # student_train_pred = deep_cnn.softmax_preds(stdnt_data, ckpt_path_final)
+    student_train_pred = student_model.softmax_preds(stdnt_data, ckpt_path_final)
     student_train_precision = metrics.accuracy(student_train_pred, stdnt_labels)
     print("Precision of student on training data: " + str(student_train_precision))
     
-    student_pred = deep_cnn.softmax_preds(stdnt_test_data, ckpt_path_final)
+    # student_pred = deep_cnn.softmax_preds(stdnt_test_data, ckpt_path_final)
+    student_pred = student_model.softmax_preds(stdnt_test_data, ckpt_path_final)
 
     precision = metrics.accuracy(student_pred, stdnt_test_labels)
     print("Precision of student after training: " + str(precision))
-
+    
+    if FLAGS.lap_epsilon > 0:
+        privacy_cost = noise_grad_analysis.compute_privacy_cost(FLAGS.lap_epsilon, FLAGS.delta)
+    else:
+        print("compute gaussian")
+        privacy_cost = noise_grad_analysis.compute_privacy_cost(FLAGS.epsilon, FLAGS.delta)
+    print("Privacy cost of student is: " + str(privacy_cost))
     return True
 
 def main(argv=None):
